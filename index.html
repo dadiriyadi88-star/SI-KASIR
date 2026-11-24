@@ -791,9 +791,14 @@
           </div>
         </div>
 
-        <div class="flex justify-end space-x-3 pt-4 border-t border-slate-100">
-          <button type="button" onclick="nav('dashboard')" class="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition">Batal</button>
-          <button type="submit" class="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold shadow-lg shadow-emerald-600/30 btn-3d">Simpan & Cetak Dokumen</button>
+        <div class="flex flex-wrap justify-end gap-3 pt-4 border-t border-slate-100">
+          <button type="button" onclick="cancelForm()" class="px-5 py-2.5 bg-slate-100 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-200 transition">Batal</button>
+          <button type="button" onclick="saveDocumentOnly()" class="px-5 py-2.5 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold shadow-md shadow-teal-600/20 btn-3d flex items-center gap-1.5">
+            <i class="fa-solid fa-floppy-disk"></i><span>Simpan Saja</span>
+          </button>
+          <button type="submit" class="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold shadow-lg shadow-emerald-600/30 btn-3d flex items-center gap-1.5">
+            <i class="fa-solid fa-print"></i><span>Simpan & Cetak Dokumen</span>
+          </button>
         </div>
       </form>
     </section>
@@ -806,6 +811,9 @@
           <p class="text-xs text-slate-500">Filter berdasarkan santri, pegawai, arus kas, maupun status cetak dokumen.</p>
         </div>
         <div class="flex flex-wrap gap-2">
+          <button onclick="resetToCleanDatabase()" class="px-3.5 py-2.5 bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-700 rounded-xl text-xs font-bold border border-slate-200 transition flex items-center space-x-1.5" title="Kosongkan seluruh transaksi untuk mulai dari awal 0 rupiah">
+            <i class="fa-solid fa-trash-can text-rose-500"></i><span>Kosongkan Transaksi</span>
+          </button>
           <button onclick="printFilteredHistory()" class="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-md btn-3d flex items-center space-x-2">
             <i class="fa-solid fa-print"></i><span>Cetak Buku Kas Terfilter</span>
           </button>
@@ -1558,6 +1566,7 @@ const firebaseConfig = {
       }
 
       initDefaultSettings();
+      sanitizeAllDocuments();
       populateUnitDropdowns();
       populateCategoryDropdowns();
       initFirebaseConnection();
@@ -2130,51 +2139,177 @@ service cloud.firestore {
     // ========================================================
     // SIMPAN TRANSAKSI & DASHBOARD
     // ========================================================
-    function saveDocument(e) {
-      e.preventDefault();
-      const type = document.getElementById('form-type').value;
+    let viewBeforePrint = 'dashboard';
+
+    function getCleanDocAmount(docOrAmount) {
+      if (docOrAmount === null || docOrAmount === undefined) return 0;
+      const val = typeof docOrAmount === 'object' ? docOrAmount.amount : docOrAmount;
+      if (typeof val === 'number') return isNaN(val) ? 0 : Math.round(val);
+      if (typeof val === 'string') {
+        const cleaned = val.replace(/\D/g, '');
+        const num = parseFloat(cleaned);
+        return isNaN(num) ? 0 : Math.round(num);
+      }
+      return 0;
+    }
+
+    function sanitizeAllDocuments() {
+      if (!Array.isArray(appData.documents)) {
+        appData.documents = [];
+        return;
+      }
+      appData.documents.forEach(d => {
+        d.amount = getCleanDocAmount(d.amount);
+        if (d.items && Array.isArray(d.items)) {
+          let calcSum = 0;
+          d.items.forEach(it => {
+            it.qty = parseFloat(it.qty) || 1;
+            it.price = getCleanDocAmount(it.price);
+            it.subtotal = Math.round(it.qty * it.price);
+            calcSum += it.subtotal;
+          });
+          if (d.type !== 'kwitansi' && calcSum > 0) {
+            d.amount = calcSum;
+          }
+        }
+        if (!d.flow) {
+          d.flow = (d.type === 'nota' ? 'OUT' : 'IN');
+        }
+      });
+      localStorage.setItem('mahad_docs', JSON.stringify(appData.documents));
+    }
+
+    function cancelForm() {
+      document.getElementById('doc-form').reset();
+      document.getElementById('form-id').value = '';
+      document.getElementById('doc-amount').value = 0;
+      document.getElementById('doc-amount-formatted').value = '';
+      document.getElementById('doc-terbilang').value = '';
+      document.getElementById('items-container').innerHTML = '';
+      document.getElementById('items-total-label').innerText = 'Rp0';
+      document.querySelectorAll('.spp-month-cb').forEach(cb => cb.checked = false);
+      nav('dashboard');
+    }
+
+    function saveDocumentOnly() {
+      const docForm = document.getElementById('doc-form');
+      if (!docForm.checkValidity()) {
+        docForm.reportValidity();
+        return;
+      }
+      saveDocument(null, false);
+    }
+
+    function resetToCleanDatabase() {
+      if (confirm("Peringatan: Anda akan mengosongkan SELURUH data transaksi di aplikasi kasir ini agar mulai dari 0 rupiah murni.\n\nApakah Anda yakin ingin mengosongkan seluruh data transaksi?")) {
+        appData.documents = [];
+        localStorage.setItem('mahad_docs', JSON.stringify([]));
+        renderDashboard();
+        renderHistory();
+        showToastNotification("Seluruh transaksi telah dikosongkan. Saldo sekarang Rp0 murni.", "info");
+      }
+    }
+
+    function showToastNotification(message, type = 'success') {
+      let toastBox = document.getElementById('app-toast-box');
+      if (!toastBox) {
+        toastBox = document.createElement('div');
+        toastBox.id = 'app-toast-box';
+        toastBox.className = "fixed top-5 right-5 z-[200] flex flex-col gap-2 max-w-sm pointer-events-none";
+        document.body.appendChild(toastBox);
+      }
+      const toast = document.createElement('div');
+      const bgColors = type === 'success' 
+        ? 'bg-emerald-600 text-white shadow-emerald-600/30' 
+        : (type === 'error' ? 'bg-rose-600 text-white shadow-rose-600/30' : 'bg-slate-800 text-white shadow-slate-900/30');
+      const icon = type === 'success' ? 'fa-circle-check' : (type === 'error' ? 'fa-triangle-exclamation' : 'fa-circle-info');
+      
+      toast.className = `p-3.5 rounded-2xl shadow-xl flex items-center space-x-3 text-xs font-bold transition-all duration-300 transform translate-y-[-20px] opacity-0 pointer-events-auto ${bgColors}`;
+      toast.innerHTML = `<i class="fa-solid ${icon} text-base"></i><span>${message}</span>`;
+      toastBox.appendChild(toast);
+
+      setTimeout(() => {
+        toast.classList.remove('translate-y-[-20px]', 'opacity-0');
+        toast.classList.add('translate-y-0', 'opacity-100');
+      }, 10);
+
+      setTimeout(() => {
+        toast.classList.add('opacity-0', 'translate-y-[-10px]');
+        setTimeout(() => {
+          if (toast && toast.remove) toast.remove();
+          else if (toast && toast.parentNode) toast.parentNode.removeChild(toast);
+        }, 350);
+      }, 3500);
+    }
+
+    function saveDocument(e, shouldPrint = true) {
+      if (e && e.preventDefault) e.preventDefault();
+      const type = document.getElementById('form-type').value || 'kwitansi';
       const id = document.getElementById('form-id').value || 'doc-' + Date.now();
+      const docNumber = (document.getElementById('doc-number').value || '').trim();
+      const clientName = (document.getElementById('doc-client-name').value || '').trim();
+      const docDate = document.getElementById('doc-date').value;
+      const signer = (document.getElementById('doc-signer').value || '').trim();
+
+      if (!docNumber || !clientName || !docDate || !signer) {
+        alert("Mohon lengkapi kolom Nomor Dokumen, Tanggal Transaksi, Nama Pihak/Pemohon, dan Nama Petugas Kasir/Bendahara!");
+        return;
+      }
 
       let totalAmount = 0;
       let items = [];
 
       if (type === 'kwitansi') {
-        totalAmount = parseFloat(document.getElementById('doc-amount').value) || 0;
+        const rawHidden = document.getElementById('doc-amount').value;
+        const formattedVal = (document.getElementById('doc-amount-formatted').value || '').replace(/\D/g, '');
+        totalAmount = parseFloat(rawHidden) || parseFloat(formattedVal) || 0;
       } else {
         totalAmount = calculateItemsTotal();
         document.querySelectorAll('#items-container tr').forEach(tr => {
           const descInput = tr.querySelector('.item-desc');
+          const qtyInput = tr.querySelector('.item-qty');
+          const priceInput = tr.querySelector('.item-price');
           if (descInput) {
-            items.push({
-              desc: descInput.value,
-              qty: parseFloat(tr.querySelector('.item-qty').value) || 0,
-              price: parseFloat(tr.querySelector('.item-price').value) || 0,
-              subtotal: (parseFloat(tr.querySelector('.item-qty').value) || 0) * (parseFloat(tr.querySelector('.item-price').value) || 0)
-            });
+            const desc = descInput.value.trim();
+            const qty = parseFloat(qtyInput ? qtyInput.value : 0) || 1;
+            const price = priceInput ? (parseFloat(priceInput.value.replace(/\D/g, '')) || 0) : 0;
+            const subtotal = Math.round(qty * price);
+            if (desc) {
+              items.push({ desc, qty, price, subtotal });
+            }
           }
         });
       }
 
+      totalAmount = Math.round(totalAmount);
+
+      if (totalAmount <= 0) {
+        alert("Peringatan: Nominal transaksi tidak boleh Rp0. Mohon periksa kembali input nominal uang atau rincian item belanja!");
+        return;
+      }
+
+      const flow = document.getElementById('doc-flow').value || (type === 'nota' ? 'OUT' : 'IN');
+
       const docObj = {
         id,
         type,
-        flow: document.getElementById('doc-flow').value || 'IN',
+        flow,
         targetType: document.getElementById('doc-target-type').value || 'eksternal',
         unit: document.getElementById('doc-unit').value || 'UMUM',
         status: document.getElementById('doc-status').value || 'LUNAS',
         category: document.getElementById('doc-category').value || 'Umum',
-        number: document.getElementById('doc-number').value,
-        date: document.getElementById('doc-date').value,
+        number: docNumber,
+        date: docDate,
         dueDate: type === 'invoice' ? document.getElementById('doc-due-date').value : '',
-        clientName: document.getElementById('doc-client-name').value,
+        clientName,
         clientPhone: document.getElementById('doc-client-phone').value || '',
         attachmentCount: document.getElementById('doc-attachment-count').value || '',
         purpose: type === 'kwitansi' ? document.getElementById('doc-purpose').value : '',
         amount: totalAmount,
-        terbilang: type === 'kwitansi' ? document.getElementById('doc-terbilang').value : terbilang(totalAmount) + ' Rupiah',
+        terbilang: type === 'kwitansi' ? (document.getElementById('doc-terbilang').value || (terbilang(totalAmount) + ' Rupiah')) : (terbilang(totalAmount) + ' Rupiah'),
         items,
         method: document.getElementById('doc-method').value,
-        signer: document.getElementById('doc-signer').value,
+        signer,
         printCount: 0,
         createdAt: new Date().toISOString()
       };
@@ -2194,8 +2329,25 @@ service cloud.firestore {
         });
       }
 
+      // TUTUP TAMPILAN FORM DAN BERSIHKAN FORM INPUTAN
+      document.getElementById('doc-form').reset();
+      document.getElementById('form-id').value = '';
+      document.getElementById('doc-amount').value = 0;
+      document.getElementById('doc-amount-formatted').value = '';
+      document.getElementById('doc-terbilang').value = '';
+      document.getElementById('items-container').innerHTML = '';
+      document.getElementById('items-total-label').innerText = 'Rp0';
+      document.querySelectorAll('.spp-month-cb').forEach(cb => cb.checked = false);
+
+      // KEMBALI KE TAMPILAN DASHBOARD SECARA BERSIH
+      nav('dashboard');
       renderDashboard();
-      openPrintView(docObj.id);
+
+      if (shouldPrint) {
+        openPrintView(docObj.id);
+      } else {
+        showToastNotification(`Dokumen kas ${docObj.number} berhasil disimpan dengan aman!`, 'success');
+      }
     }
 
     function renderDashboard() {
@@ -2210,8 +2362,9 @@ service cloud.firestore {
       let countInvoice = 0, sumInvoice = 0;
 
       docs.forEach(d => {
-        const amount = Number(d.amount) || 0;
+        const amount = getCleanDocAmount(d.amount);
         const flow = d.flow || (d.type === 'nota' ? 'OUT' : 'IN');
+        
         if (flow === 'IN') {
           totalIn += amount;
           countIn++;
@@ -2288,7 +2441,8 @@ service cloud.firestore {
             const flowBadge = flow === 'IN' 
               ? '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold bg-emerald-100 text-emerald-800">Kas Masuk</span>'
               : '<span class="px-2 py-0.5 rounded text-[10px] font-extrabold bg-rose-100 text-rose-800">Kas Keluar</span>';
-            
+            const amt = getCleanDocAmount(d.amount);
+
             const tr = document.createElement('tr');
             tr.className = "hover:bg-slate-50/80 transition";
             tr.innerHTML = `
@@ -2297,7 +2451,7 @@ service cloud.firestore {
               <td class="p-3 text-xs font-bold text-emerald-800">${d.unit || 'UMUM'}</td>
               <td class="p-3 text-xs font-medium text-slate-800 truncate max-w-[150px]">${d.clientName}</td>
               <td class="p-3 text-xs text-slate-600">${formatDateIndo(d.date)}</td>
-              <td class="p-3 text-xs text-right font-extrabold font-mono text-slate-900">${formatRupiah(d.amount)}</td>
+              <td class="p-3 text-xs text-right font-extrabold font-mono text-slate-900">${formatRupiah(amt)}</td>
               <td class="p-3 text-center">${getBadgeStatus(d.status)}</td>
               <td class="p-3 text-center">
                 <div class="flex items-center justify-center space-x-1.5">
@@ -2342,7 +2496,7 @@ service cloud.firestore {
         const idx = months.findIndex(m => m.key === key);
         if (idx !== -1) {
           const flow = doc.flow || (doc.type === 'nota' ? 'OUT' : 'IN');
-          const amt = Number(doc.amount) || 0;
+          const amt = getCleanDocAmount(doc.amount);
           if (flow === 'IN') {
             inData[idx] += amt;
           } else {
@@ -2424,6 +2578,11 @@ service cloud.firestore {
       activeDocIdForPrint = docId;
       const doc = appData.documents.find(d => d.id === docId);
       if(!doc) return;
+
+      const activeSec = Array.from(document.querySelectorAll('main > section:not(.hidden)'))
+        .map(s => s.id.replace('view-', ''))
+        .find(v => v !== 'form' && v !== 'print');
+      viewBeforePrint = activeSec || 'dashboard';
 
       doc.printCount = (doc.printCount || 0) + 1;
       localStorage.setItem('mahad_docs', JSON.stringify(appData.documents));
@@ -2598,6 +2757,11 @@ service cloud.firestore {
       document.getElementById('view-print').classList.add('hidden');
       changePrintTemplate('standard');
       document.getElementById('print-template-selector').value = 'standard';
+      if (viewBeforePrint && viewBeforePrint !== 'form') {
+        nav(viewBeforePrint);
+      } else {
+        nav('dashboard');
+      }
       renderDashboard();
       if(!document.getElementById('view-riwayat').classList.contains('hidden')) renderHistory();
     }
@@ -2750,7 +2914,7 @@ service cloud.firestore {
           <td class="p-3 text-xs font-bold text-emerald-800">${doc.unit || 'UMUM'}</td>
           <td class="p-3 text-xs font-semibold text-slate-800">${doc.clientName}</td>
           <td class="p-3 text-xs text-slate-600">${formatDateIndo(doc.date)}</td>
-          <td class="p-3 text-xs text-right font-extrabold font-mono text-slate-900">${formatRupiah(doc.amount)}</td>
+          <td class="p-3 text-xs text-right font-extrabold font-mono text-slate-900">${formatRupiah(getCleanDocAmount(doc.amount))}</td>
           <td class="p-3 text-center">${printBadge}</td>
           <td class="p-3 text-center no-print">
             <div class="flex items-center justify-center space-x-1">
@@ -2795,14 +2959,14 @@ service cloud.firestore {
       let total = 0;
       tbody.innerHTML = '';
       studentDocs.forEach(doc => {
-        total += (doc.amount || 0);
+        total += getCleanDocAmount(doc.amount);
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td class="p-2.5 font-mono font-bold">${doc.number}</td>
           <td class="p-2.5">${formatDateIndo(doc.date)}</td>
           <td class="p-2.5 font-semibold text-emerald-800">${doc.unit || 'UMUM'}</td>
           <td class="p-2.5 text-slate-700">${doc.purpose || doc.category || '-'}</td>
-          <td class="p-2.5 text-right font-bold font-mono">${formatRupiah(doc.amount)}</td>
+          <td class="p-2.5 text-right font-bold font-mono">${formatRupiah(getCleanDocAmount(doc.amount))}</td>
         `;
         tbody.appendChild(tr);
       });
@@ -2853,8 +3017,9 @@ service cloud.firestore {
 
       filteredDocs.forEach(d => {
         const flow = d.flow || (d.type === 'nota' ? 'OUT' : 'IN');
-        if (flow === 'IN') sumIn += (d.amount || 0);
-        else sumOut += (d.amount || 0);
+        const amt = getCleanDocAmount(d.amount);
+        if (flow === 'IN') sumIn += amt;
+        else sumOut += amt;
       });
 
       const netBalance = sumIn - sumOut;
@@ -2890,7 +3055,7 @@ service cloud.firestore {
             <td class="p-2">${formatDateIndo(doc.date)}</td>
             <td class="p-2 font-medium">${doc.clientName}</td>
             <td class="p-2 text-slate-500">${doc.purpose || doc.category || '-'}</td>
-            <td class="p-2 text-right font-extrabold font-mono">${formatRupiah(doc.amount)}</td>
+            <td class="p-2 text-right font-extrabold font-mono">${formatRupiah(getCleanDocAmount(doc.amount))}</td>
           `;
           tbody.appendChild(tr);
         });
@@ -3040,18 +3205,30 @@ service cloud.firestore {
     function addItemRow(desc = '', qty = 1, price = 0) {
       const container = document.getElementById('items-container');
       const rowId = 'row-' + Date.now() + '-' + Math.random().toString(36).substr(2, 4);
+      const cleanPrice = getCleanDocAmount(price);
+      const formattedPrice = cleanPrice > 0 ? new Intl.NumberFormat('id-ID').format(cleanPrice) : '';
       const tr = document.createElement('tr');
       tr.id = rowId;
       tr.innerHTML = `
         <td class="p-2"><input type="text" class="item-desc w-full p-2 border border-slate-300 rounded-xl text-xs" value="${desc}" placeholder="Nama barang / uraian keperluan..." required></td>
-        <td class="p-2"><input type="number" min="1" class="item-qty w-full p-2 border border-slate-300 rounded-xl text-xs text-center" value="${qty}" oninput="calculateItemsTotal()" required></td>
-        <td class="p-2"><input type="number" min="0" class="item-price w-full p-2 border border-slate-300 rounded-xl text-xs text-right" value="${price}" oninput="calculateItemsTotal()" required></td>
-        <td class="p-2 text-right font-bold text-slate-700"><span class="item-subtotal">Rp0</span></td>
+        <td class="p-2"><input type="number" min="1" step="any" class="item-qty w-full p-2 border border-slate-300 rounded-xl text-xs text-center font-mono font-bold" value="${qty}" oninput="calculateItemsTotal()" required></td>
+        <td class="p-2"><input type="text" class="item-price w-full p-2 border border-slate-300 rounded-xl text-xs text-right font-mono font-bold" value="${formattedPrice}" oninput="handleItemPriceInput(this)" placeholder="0" required></td>
+        <td class="p-2 text-right font-bold text-slate-800 font-mono"><span class="item-subtotal">Rp0</span></td>
         <td class="p-2 text-center">
           <button type="button" onclick="removeItemRow('${rowId}')" class="text-rose-500 hover:text-rose-700 p-1"><i class="fa-solid fa-trash"></i></button>
         </td>
       `;
       container.appendChild(tr);
+      calculateItemsTotal();
+    }
+
+    function handleItemPriceInput(el) {
+      let raw = el.value.replace(/\D/g, '');
+      if (!raw) {
+        el.value = '';
+      } else {
+        el.value = new Intl.NumberFormat('id-ID').format(parseFloat(raw));
+      }
       calculateItemsTotal();
     }
 
@@ -3064,13 +3241,17 @@ service cloud.firestore {
     function calculateItemsTotal() {
       let grandTotal = 0;
       document.querySelectorAll('#items-container tr').forEach(tr => {
-        const qty = parseFloat(tr.querySelector('.item-qty').value) || 0;
-        const price = parseFloat(tr.querySelector('.item-price').value) || 0;
-        const subtotal = qty * price;
-        tr.querySelector('.item-subtotal').innerText = formatRupiah(subtotal);
+        const qtyInput = tr.querySelector('.item-qty');
+        const priceInput = tr.querySelector('.item-price');
+        const qty = parseFloat(qtyInput ? qtyInput.value : 0) || 0;
+        const price = priceInput ? (parseFloat(priceInput.value.replace(/\D/g, '')) || 0) : 0;
+        const subtotal = Math.round(qty * price);
+        const subtotalEl = tr.querySelector('.item-subtotal');
+        if (subtotalEl) subtotalEl.innerText = formatRupiah(subtotal);
         grandTotal += subtotal;
       });
-      document.getElementById('items-total-label').innerText = formatRupiah(grandTotal);
+      const grandLabel = document.getElementById('items-total-label');
+      if (grandLabel) grandLabel.innerText = formatRupiah(grandTotal);
       return grandTotal;
     }
 
@@ -3099,9 +3280,10 @@ service cloud.firestore {
 
       if (doc.type === 'kwitansi') {
         document.getElementById('doc-purpose').value = doc.purpose || '';
-        document.getElementById('doc-amount').value = doc.amount;
-        document.getElementById('doc-amount-formatted').value = new Intl.NumberFormat('id-ID').format(doc.amount);
-        updateTerbilang(doc.amount);
+        const cleanAmt = getCleanDocAmount(doc.amount);
+        document.getElementById('doc-amount').value = cleanAmt;
+        document.getElementById('doc-amount-formatted').value = cleanAmt > 0 ? new Intl.NumberFormat('id-ID').format(cleanAmt) : '';
+        updateTerbilang(cleanAmt);
       } else {
         if (doc.type === 'invoice') document.getElementById('doc-due-date').value = doc.dueDate;
         const container = document.getElementById('items-container');
@@ -3136,9 +3318,10 @@ service cloud.firestore {
 
       if (doc.type === 'kwitansi') {
         document.getElementById('doc-purpose').value = doc.purpose || '';
-        document.getElementById('doc-amount').value = doc.amount;
-        document.getElementById('doc-amount-formatted').value = new Intl.NumberFormat('id-ID').format(doc.amount);
-        updateTerbilang(doc.amount);
+        const cleanAmt = getCleanDocAmount(doc.amount);
+        document.getElementById('doc-amount').value = cleanAmt;
+        document.getElementById('doc-amount-formatted').value = cleanAmt > 0 ? new Intl.NumberFormat('id-ID').format(cleanAmt) : '';
+        updateTerbilang(cleanAmt);
       } else {
         const container = document.getElementById('items-container');
         container.innerHTML = '';
@@ -3174,10 +3357,10 @@ service cloud.firestore {
         updateTerbilang(0);
         return;
       }
-      let formatted = new Intl.NumberFormat('id-ID').format(rawVal);
-      el.value = formatted;
-      document.getElementById('doc-amount').value = rawVal;
-      updateTerbilang(rawVal);
+      let numVal = parseFloat(rawVal) || 0;
+      el.value = new Intl.NumberFormat('id-ID').format(numVal);
+      document.getElementById('doc-amount').value = numVal;
+      updateTerbilang(numVal);
     }
 
     function handleCategoryChange() {
@@ -3193,7 +3376,8 @@ service cloud.firestore {
     }
 
     function calculateQuickSPP() {
-      const rate = parseFloat(document.getElementById('spp-rate-monthly').value) || 0;
+      const rateInput = document.getElementById('spp-rate-monthly');
+      const rate = getCleanDocAmount(rateInput ? rateInput.value : 500000);
       const checkedBoxes = Array.from(document.querySelectorAll('.spp-month-cb:checked')).map(cb => cb.value);
       
       if (checkedBoxes.length > 0) {
@@ -3410,7 +3594,7 @@ service cloud.firestore {
         const unit = doc.unit || 'UMUM';
         const flow = doc.flow || (doc.type === 'nota' ? 'OUT' : 'IN');
         const st = doc.status || 'LUNAS';
-        csvContent += `"${doc.number}","${flow}","${doc.type}","${unit}","${cat}","${st}","${doc.date}","${clientText}","${purposeText}","${doc.method}","${doc.amount}"\n`;
+        csvContent += `"${doc.number}","${flow}","${doc.type}","${unit}","${cat}","${st}","${doc.date}","${clientText}","${purposeText}","${doc.method}","${getCleanDocAmount(doc.amount)}"\n`;
       });
 
       const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
